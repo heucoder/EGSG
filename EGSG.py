@@ -1,80 +1,80 @@
 import numpy as np
-import scipy.spatial.distance as dist
-from sklearn.datasets import load_digits
+import pandas as pd
+from sklearn.metrics import mutual_info_score
 from collections import Counter
 
-def calc_MI(x, y, bins=8):
-    c_xy = np.histogram2d(x, y, bins)[0]
-    n, m = c_xy.shape
-    row_flags = [True]*n
-    col_flags = [True]*m
-    for i in range(n):
-        if sum(c_xy[i]) == 0:
-            row_flags[i] = False
-        if sum(c_xy[:,i]) == 0:
-            col_flags[i] = False
-    c_xy = c_xy[row_flags,:]
-    c_xy = c_xy[:, col_flags]
-    
-    g, p, dof, expected = chi2_contingency(c_xy, lambda_="log-likelihood")
-    mi = 0.5 * g / c_xy.sum()
-    return mi/np.log(2)
 
-def calc_HX(x, bins=8):
-    p = np.histogram(x, bins,density=True)[0]
-    s = np.sum(p)
-    P = [item/s for item in p]
-    Hx = np.sum([-item*np.log2(item) for item in P if item != 0])
-    return Hx
+def cut(data, bins = 8):
+    return pd.cut(data, bins, labels=range(bins)).codes
 
-def calc_classHX(label):
-    s = len(label)
-    print(s)
+def calc_MI(x, y, x_bins=8, y_bins=8, x_discretization=False, y_discretization=False):
+    if x_discretization:
+        x = cut(x, x_bins)
+    if y_discretization:
+        y = cut(y, y_bins)
+    return mutual_info_score(x, y)
+
+def calc_HX(x, bins = 8, discretization=False):
+    if discretization:
+        x = cut(x, 8)
+    s = len(x)
     Hx = 0
-    for c, p in Counter(label).most_common():
+    for c, p in Counter(x).most_common():
         Hx += -(p/s)*np.log2(p/s)
     return Hx
 
-
 class EGSG:
-    def __init__(self):
+    def __init__(self, attr, t=1, *,label_discretization = False, label_bins = 8, x_discretization=False, x_bins=8, weight = 1.0):
         self._scores = None
         self._indexs = None
-        self._classHX = 0
-        self._weight = 0
+
+        self._weight = weight
         self._t = 0
-        self._k = 0
-        self._bins = bins
+        self._k = attr
+
         self._feature_groups = []
 
+        self._label_discretization = label_discretization
+        self._label_bins = label_bins
+        self._x_discretization = x_discretization
+        self._x_bins = x_bins
 
     def fit(self, data, label):
-        self._classHX = calc_classHX(label)
         # step1
+        print("step1")
         ranks, scores = self._get_feature_ranks(data, label)
-        
+        print(ranks)
         # step2
+        print("step2")
         self._get_feature_groups(data, ranks, scores)
 
         # step3
-        self._indexs = self._select_core_features(self._feature_groups, self._t)
+        print("step3")
+        self._indexs = np.array(self._select_core_features(self._feature_groups, self._t))
+        self._scores = np.abs(np.array(scores)[self._indexs])
 
     def fit_transform(self, data, label):
-        pass
+        self.fit(data, label)
+        return data[:, self._indexs]
 
     def transform(self, data):
-        pass
+        if self._indexs:
+            return data[:, self._indexs]
+        else:
+            pass
     
     # step1
     def _get_feature_ranks(self, data, label):
         scores = []
+        classHX = calc_HX(label, self._label_bins, self._label_discretization)
         for feature in data.T:
             MI = calc_MI(feature, label)
             hx = calc_HX(feature)
-            ICC = MI/(hx + self._classHx - MI)
+            ICC = MI/(hx + classHX - MI)
             scores.append(-ICC)
 
         return np.argsort(scores)[:self._k], scores
+
 
     # step2
     def _get_feature_groups(self, data, feature_ranks, feature_scores):
@@ -84,9 +84,9 @@ class EGSG:
             flag = 1
             for feature_group in self._feature_groups:
                 core_rank = feature_group[0]
-                mi = calc_MI(data[:,core_rank], data[:, feature_rank])
-                hx = calc_HX(data[:, core_rank])
-                hy = calc_HX(data[:, feature_rank])
+                mi = calc_MI(data[:,core_rank], data[:, feature_rank], self._x_bins, self._x_discretization, self._x_bins, self._x_discretization)
+                hx = calc_HX(data[:, core_rank], self._x_bins, self._x_discretization)
+                hy = calc_HX(data[:, feature_rank], self._x_bins, self._x_discretization)
                 if mi/(hx+hy-mi) < self._weight*feature_scores[feature_rank]:
                     feature_group.append(feature_rank)
                     flag = 0
@@ -94,7 +94,7 @@ class EGSG:
             
             if flag:
                 self._feature_groups.append([feature_rank])
-    
+
 
     # step3
     def _select_core_features(self, feature_groups, t = 10):
@@ -106,7 +106,18 @@ class EGSG:
                 core_feature_ranks.append(random_rank)
         
         return core_feature_ranks
+            
+
+
+def test():
+    from sklearn.datasets import load_digits
+    from sklearn.linear_model import LogisticRegression
+    X, y = load_digits(return_X_y=True)
+    LR = LogisticRegression()
+    egsg = EGSG(40, x_discretization=10, x_bins=10)
+    X_new = egsg.fit_transform(X, y)
+    print(X.shape, X_new.shape)
 
 
 if __name__ == '__main__':
-    print(2333)
+    test()
